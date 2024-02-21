@@ -58,7 +58,8 @@ pub const Token = struct {
 pub const Tokenizer = struct {
     buffer: [:0]const u8,
     index: usize,
-    paren_depth: u8,
+    parentheses_depth: u8,
+    eat_separator: bool,
 
     /// For debugging purposes
     pub fn dump(self: *Tokenizer, token: *const Token) void {
@@ -71,7 +72,8 @@ pub const Tokenizer = struct {
         return Tokenizer{
             .buffer = buffer,
             .index = src_start,
-            .paren_depth = 0, // depth of parentheses 0 is command level, >0 are arguments
+            .parentheses_depth = 0, // depth of parentheses 0 is command level, >0 are arguments
+            .eat_separator = true,
         };
     }
 
@@ -117,18 +119,19 @@ pub const Tokenizer = struct {
                 .start => switch (c) {
                     ' ', '\t', '\n', '\r' => {
                         state = .separator;
-                        if (self.paren_depth > 0) {
+                        if (!self.eat_separator) {
                             result.tag = .separator;
                         }
                     },
-                    'a'...'z', 'A'...'Z', '_' => if (self.paren_depth == 0) {
+                    'a'...'z', 'A'...'Z', '_' => if (self.parentheses_depth == 0) {
                         result.tag = .identifier;
                         state = .identifier;
                     } else {
                         result.tag = .string;
                         state = .string;
+                        self.eat_separator = false; // an argument may be followed by separators
                     },
-                    '0'...'9', '/' => if (self.paren_depth == 0) {
+                    '0'...'9', '/' => if (self.parentheses_depth == 0) {
                         result.tag = .invalid;
                         result.loc.end = self.index;
                         self.index += 1;
@@ -136,17 +139,17 @@ pub const Tokenizer = struct {
                     } else {
                         result.tag = .string;
                         state = .string;
+                        self.eat_separator = false; // an argument may be followed by separators
                     },
-
                     '(' => {
-                        self.paren_depth += 1;
+                        self.parentheses_depth += 1;
                         result.tag = .l_paren;
                         self.index += 1;
                         break;
                     },
                     ')' => {
-                        if (self.paren_depth > 0) {
-                            self.paren_depth -= 1;
+                        if (self.parentheses_depth > 0) {
+                            self.parentheses_depth -= 1;
                             result.tag = .r_paren;
                         } else {
                             result.tag = .invalid;
@@ -174,11 +177,11 @@ pub const Tokenizer = struct {
                 },
                 .separator => switch (c) {
                     '\n', '\r', ' ', '\t' => {},
-                    else => if (self.paren_depth == 0) {
+                    else => if (self.eat_separator or (c == ')' and self.parentheses_depth == 1)) {
                         state = .start;
                         result.loc.start = self.index;
-                        // reread char
-                        self.index -= 1;
+                        self.index -= 1; // reread char
+                        self.eat_separator = true;
                     } else {
                         break;
                     },
@@ -201,8 +204,8 @@ test "identifier a" {
     try testTokenize("a", &.{.identifier});
 }
 
-test "identifier ab" {
-    try testTokenize("ab", &.{.identifier});
+test "identifier abc" {
+    try testTokenize("abc", &.{.identifier});
 }
 
 test "identifier ab c" {
@@ -220,6 +223,11 @@ test "comment and identifier" {
     , &.{.identifier});
 }
 
+test "parentheses" {
+    try testTokenize("foo( )", &.{ .identifier, .l_paren, .r_paren });
+    try testTokenize("foo(bar)", &.{ .identifier, .l_paren, .string, .r_paren });
+    try testTokenize("foo(bar baz )", &.{ .identifier, .l_paren, .string, .separator, .string, .r_paren });
+}
 //test "equal" {
 //    try testTokenize("a = b", &.{ .string, .equal, .string });
 //}
